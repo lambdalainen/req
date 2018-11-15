@@ -233,6 +233,7 @@ import Data.Maybe (fromMaybe)
 import Data.Proxy
 import Data.Semigroup hiding (Option, option)
 import Data.Text (Text)
+import Data.Text.Encoding (encodeUtf8)
 import Data.Typeable (Typeable)
 import GHC.Generics
 import GHC.TypeLits
@@ -241,6 +242,7 @@ import Web.HttpApiData (ToHttpApiData (..))
 import qualified Blaze.ByteString.Builder     as BB
 import qualified Data.Aeson                   as A
 import qualified Data.ByteString              as B
+import qualified Data.ByteString.Builder      as B
 import qualified Data.ByteString.Lazy         as BL
 import qualified Data.CaseInsensitive         as CI
 import qualified Data.List.NonEmpty           as NE
@@ -926,7 +928,13 @@ instance RequestComponent (Url scheme) where
           Https -> 443
       , L.host   = Y.urlEncode False (T.encodeUtf8 host)
       , L.path   =
-          (BL.toStrict . BB.toLazyByteString . Y.encodePathSegments) path }
+          (BL.toStrict . BB.toLazyByteString . encodePathSegments) path }
+
+encodePathSegments :: [Text] -> B.Builder
+encodePathSegments =
+  foldr (\x -> mappend (B.byteString "/" `mappend` encode_path_seg x)) mempty
+  where
+  encode_path_seg = Y.urlEncodeBuilder True . encodeUtf8
 
 ----------------------------------------------------------------------------
 -- Request—Body
