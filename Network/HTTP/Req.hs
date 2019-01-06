@@ -116,7 +116,9 @@ module Network.HTTP.Req
     -- $making-a-request
     req
   , reqBr
+  , reqBrRawBody
   , req'
+  , reqRawBody
   , withReqManager
     -- * Embedding requests in your monad
     -- $embedding-requests
@@ -415,7 +417,7 @@ req method url body Proxy options =
 --
 -- @since 1.0.0
 
-reqBr
+reqBr, reqBrRawBody
   :: ( MonadHttp    m
      , HttpMethod   method
      , HttpBody     body
@@ -426,28 +428,45 @@ reqBr
   -> Option scheme     -- ^ Collection of optional parameters
   -> (L.Response L.BodyReader -> IO a) -- ^ How to consume response
   -> m a               -- ^ Result
-reqBr method url body options consume = req' method url body options $ \request manager -> do
-  HttpConfig {..}  <- getHttpConfig
-  let wrapVanilla = handle (throwIO . VanillaHttpException)
-      wrapExc     = handle (throwIO . LI.toHttpException request)
-      withRRef    = bracket
-        (newIORef Nothing)
-        (readIORef >=> mapM_ L.responseClose)
-  (liftIO . try . wrapVanilla . wrapExc) (withRRef $ \rref -> do
-    let openResponse = mask_ $ do
-          r  <- readIORef rref
-          mapM_ L.responseClose r
-          r' <- L.responseOpen request manager
-          writeIORef rref (Just r')
-          return r'
-    r <- retrying
-      httpConfigRetryPolicy
-      (\st r -> return $ httpConfigRetryJudge st r)
-      (const openResponse)
-    (preview, r') <- grabPreview bodyPreviewLength r
-    mapM_ LI.throwHttp (httpConfigCheckResponse request r' preview)
-    consume r')
-    >>= either handleHttpException return
+reqBr        = doReqBr False
+reqBrRawBody = doReqBr True
+
+doReqBr
+  :: ( MonadHttp    m
+     , HttpMethod   method
+     , HttpBody     body
+     , HttpBodyAllowed (AllowsBody method) (ProvidesBody body) )
+  => Bool              -- ^ Use rawBody?
+  -> method            -- ^ HTTP method
+  -> Url scheme        -- ^ 'Url'—location of resource
+  -> body              -- ^ Body of the request
+  -> Option scheme     -- ^ Collection of optional parameters
+  -> (L.Response L.BodyReader -> IO a) -- ^ How to consume response
+  -> m a               -- ^ Result
+doReqBr raw_body method url body options consume =
+  let f = if raw_body then reqRawBody else req'
+  in  f method url body options $ \request manager -> do
+    HttpConfig {..}  <- getHttpConfig
+    let wrapVanilla = handle (throwIO . VanillaHttpException)
+        wrapExc     = handle (throwIO . LI.toHttpException request)
+        withRRef    = bracket
+          (newIORef Nothing)
+          (readIORef >=> mapM_ L.responseClose)
+    (liftIO . try . wrapVanilla . wrapExc) (withRRef $ \rref -> do
+      let openResponse = mask_ $ do
+            r  <- readIORef rref
+            mapM_ L.responseClose r
+            r' <- L.responseOpen request manager
+            writeIORef rref (Just r')
+            return r'
+      r <- retrying
+        httpConfigRetryPolicy
+        (\st r -> return $ httpConfigRetryJudge st r)
+        (const openResponse)
+      (preview, r') <- grabPreview bodyPreviewLength r
+      mapM_ LI.throwHttp (httpConfigCheckResponse request r' preview)
+      consume r')
+      >>= either handleHttpException return
 
 -- | Mostly like 'req' with respect to its arguments, but accepts a callback
 -- that allows to perform a request in arbitrary fashion.
@@ -458,7 +477,7 @@ reqBr method url body options consume = req' method url body options $ \request 
 --
 -- @since 0.3.0
 
-req'
+req', reqRawBody
   :: forall m method body scheme a.
      ( MonadHttp  m
      , HttpMethod method
@@ -471,6 +490,24 @@ req'
   -> (L.Request -> L.Manager -> m a) -- ^ How to perform request
   -> m a               -- ^ Result
 req' method url body options m = do
+  request <- makeRequest method url body options
+  withReqManager (m request)
+reqRawBody method url body options m = do
+  request <- makeRequest method url body options
+  withReqManager (m (request { LI.rawBody = True })) -- for chunked-encoding
+
+makeRequest
+  :: forall m method body scheme a.
+     ( MonadHttp  m
+     , HttpMethod method
+     , HttpBody   body
+     , HttpBodyAllowed (AllowsBody method) (ProvidesBody body) )
+  => method            -- ^ HTTP method
+  -> Url scheme        -- ^ 'Url'—location of resource
+  -> body              -- ^ Body of the request
+  -> Option scheme     -- ^ Collection of optional parameters
+  -> m L.Request       -- ^ Result
+makeRequest method url body options = do
   config@HttpConfig {..}  <- getHttpConfig
   let -- NOTE First appearance of any given header wins. This allows to
       -- “overwrite” headers when we construct a request by cons-ing.
@@ -488,8 +525,7 @@ req' method url body options m = do
         getRequestMod (Womb body   :: Womb "body"   body) <>
         getRequestMod url                                 <>
         getRequestMod (Womb method :: Womb "method" method)
-  request <- finalizeRequest options request'
-  withReqManager (m request)
+  finalizeRequest options request'
 
 -- | Perform an action using the global implicit 'L.Manager' that the rest
 -- of the library uses. This allows to reuse connections that the
