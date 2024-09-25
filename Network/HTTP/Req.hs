@@ -233,6 +233,7 @@ import Data.Aeson (FromJSON (..), ToJSON (..))
 import Data.Aeson qualified as A
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as B
+import Data.ByteString.Builder qualified as B
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Data (Data)
@@ -1209,8 +1210,22 @@ instance RequestComponent (Url scheme) where
               Https -> 443,
             L.host = Y.urlEncode False (T.encodeUtf8 host),
             L.path =
-              (BL.toStrict . BB.toLazyByteString . Y.encodePathSegments) path
+              (BL.toStrict . BB.toLazyByteString . encodePathSegments) path
           }
+
+-- Encode '+' to ' ', needed since we have base64 encoded keys in e.g. idxuser.
+-- To compare:
+--
+--     > Y.encodePathSegments ["content_6gEFmHq4Br8KwnThg+1WgWlDMdE="]
+--     > "/content_6gEFmHq4Br8KwnThg+1WgWlDMdE="
+--
+--     > encodePathSegments ["content_6gEFmHq4Br8KwnThg+1WgWlDMdE="]
+--     > "/content_6gEFmHq4Br8KwnThg%2B1WgWlDMdE%3D"
+encodePathSegments :: [Text] -> B.Builder
+encodePathSegments =
+  foldr (\x -> mappend (B.byteString "/" `mappend` encode_path_seg x)) mempty
+  where
+  encode_path_seg = Y.urlEncodeBuilder True . T.encodeUtf8
 
 ----------------------------------------------------------------------------
 -- Request—Body
