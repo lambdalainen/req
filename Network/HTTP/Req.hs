@@ -1771,7 +1771,7 @@ instance (FromJSON a) => HttpResponse (JsonResponse a) where
     case A.eitherDecode (BL.fromChunks chunks) of
       Left e -> throwIO (JsonHttpException e)
       Right x -> return $ JsonResponse (x <$ r)
-  acceptHeader Proxy = Just "application/json"
+  acceptHeader Proxy = Nothing
 
 -- | Use this as the fourth argument of 'req' to specify that you want it to
 -- return the 'JsonResponse' interpretation.
