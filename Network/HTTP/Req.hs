@@ -81,6 +81,7 @@ module Network.HTTP.Req
     -- $making-a-request
     req,
     reqBr,
+    reqBrRawBody,
     reqCb,
     req',
     withReqManager,
@@ -429,7 +430,7 @@ req method url body responseProxy options =
 -- 'L.BodyReader'@ manually, in a custom way.
 --
 -- @since 1.0.0
-reqBr ::
+reqBr, reqBrRawBody ::
   ( MonadHttp m,
     HttpMethod method,
     HttpBody body,
@@ -449,6 +450,9 @@ reqBr ::
   m a
 reqBr method url body options consume =
   req' method url body options (reqHandler consume)
+
+reqBrRawBody method url body options consume =
+  reqRawBody method url body options (reqHandler consume)
 
 -- | A version of 'req' that takes a callback to modify the 'L.Request', but
 -- otherwise performs the request identically.
@@ -544,7 +548,7 @@ reqHandler consume request manager = do
 -- 'L.Request' and allows you to use it.
 --
 -- @since 0.3.0
-req' ::
+req', reqRawBody ::
   forall m method body scheme a.
   ( MonadHttp m,
     HttpMethod method,
@@ -584,6 +588,29 @@ req' method url body options m = do
             <> getRequestMod (Tagged method :: Tagged "method" method)
   request <- finalizeRequest options request'
   withReqManager (m request)
+
+-- For chunked transfer encoding used by Riak
+reqRawBody method url body options m = do
+  config <- getHttpConfig
+  let -- NOTE First appearance of any given header wins. This allows to
+      -- “overwrite” headers when we construct a request by cons-ing.
+      nubHeaders = Endo $ \x ->
+        x {L.requestHeaders = nubBy ((==) `on` fst) (L.requestHeaders x)}
+      request' =
+        flip appEndo L.defaultRequest $
+          -- NOTE The order of 'mappend's matters, here method is overwritten
+          -- first and 'options' take effect last. In particular, this means
+          -- that 'options' can overwrite things set by other request
+          -- components, which is useful for setting port number,
+          -- "Content-Type" header, etc.
+          nubHeaders
+            <> getRequestMod options
+            <> getRequestMod config
+            <> getRequestMod (Tagged body :: Tagged "body" body)
+            <> getRequestMod url
+            <> getRequestMod (Tagged method :: Tagged "method" method)
+  request <- finalizeRequest options request'
+  withReqManager (m request{ LI.rawBody = True })
 
 -- | Perform an action using the global implicit 'L.Manager' that the rest
 -- of the library uses. This allows to reuse connections that the
